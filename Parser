@@ -1,0 +1,183 @@
+import re
+import pandas as pd
+import os
+from datetime import datetime
+import tkinter as tk
+from tkinter import filedialog
+
+# Initialize Tkinter root widget to suppress the Tkinter window
+tk_root = tk.Tk()
+tk_root.withdraw()
+
+# Use a file dialog to select the file
+file_path = filedialog.askopenfilename(
+    title='Select file',
+    filetypes=[('Text Files', '*.txt'), ('All Files', '*.*')]
+)
+
+def extract_info(block_lines):
+    if len(block_lines) != 3:
+        return None, 'Incorrect number of lines'
+
+    event_line, time_line, date_line = block_lines
+
+    if not (event_line.strip() and date_line.strip() and time_line.strip()):
+        return None, 'Empty line in block'
+
+    date_str = date_line.strip()
+    time_str = time_line.strip()
+
+    try:
+        datetime_obj = pd.to_datetime(f"{time_str} {date_str}", format='%H:%M:%S %d/%m/%y')
+    except ValueError:
+        return None, 'Date/time parsing error'
+
+    # Regex pattern to handle attacked events with positive or negative net respect
+    event_match = re.match(r"(.+?) (attacked|mugged|hospitalized) (.+?) \(([+-]?\d+\.?\d*)\) \[view\]", event_line)
+    if event_match:
+        attacker, result, defender, net_respect_str = event_match.groups()
+        net_respect = float(net_respect_str)
+    elif "but lost" in event_line:
+        try:
+            attacker, defender = event_line.split(' attacked ')
+            defender = defender.split(' but lost')[0]
+            result = "attacked and lost"
+            net_respect = 0
+        except Exception as e:
+            return None, f'Parsing error: {e}'
+    elif "and stalemated" in event_line:
+        try:
+            attacker, defender = event_line.split(' attacked ')
+            defender = defender.split(' and stalemated')[0]
+            result = "stalemated"
+            net_respect = 0
+        except Exception as e:
+            return None, f'Parsing error: {e}'
+    elif "and escaped" in event_line:
+        try:
+            attacker, defender = event_line.split(' attacked ')
+            defender = defender.split(' and escaped')[0]
+            result = "escaped"
+            net_respect = 0
+        except Exception as e:
+            return None, f'Parsing error: {e}'
+    else:
+        return None, 'Event format mismatch'
+
+    return {
+        'DateTime': datetime_obj,
+        'Attacker': attacker,
+        'Result': result,
+        'Defender': defender,
+        'Net Respect': net_respect
+    }, None
+
+# Assume file_path and DataFrame creation from parsed events remain unchanged
+
+# Proceed only if a file is selected
+if file_path:
+    events = []
+    invalid_blocks_count = 0
+    invalid_reasons = {}
+    format_mismatch_blocks = []
+
+    with open(file_path, 'r') as file:
+        block_lines = []
+        for line in file:
+            line = line.strip()
+            if line:
+                block_lines.append(line)
+                if len(block_lines) == 3:
+                    info, reason = extract_info(block_lines)
+                    if info:
+                        events.append(info)
+                    else:
+                        invalid_blocks_count += 1
+                        if reason in invalid_reasons:
+                            invalid_reasons[reason] += 1
+                        else:
+                            invalid_reasons[reason] = 1
+                        if reason == 'Event format mismatch':
+                            format_mismatch_blocks.append(block_lines)
+                    block_lines = []
+
+    if events:
+        df = pd.DataFrame(events)
+        print(df.head())
+        print(f"Number of lines that didn't create a valid block: {invalid_blocks_count}")
+        print("Invalid block reasons:")
+        for reason, count in invalid_reasons.items():
+            print(f"{reason}: {count}")
+
+        # Print the top 5 event format mismatch blocks
+        print("Top 5 blocks with event format mismatch:")
+        for block in format_mismatch_blocks[:5]:
+            print("\n".join(block))
+            print("---")
+    else:
+        print("No valid data to process.")
+else:
+    print("File not selected.")
+
+if not df.empty:
+    # Sort the DataFrame based on the 'DateTime' column
+    df_sorted = df.sort_values(by='DateTime')
+
+    # Get the earliest and latest DateTime values
+    earliest_event_time = df_sorted.iloc[0]['DateTime']
+    latest_event_time = df_sorted.iloc[-1]['DateTime']
+
+    print(f"Earliest event time: {earliest_event_time}")
+    print(f"Latest event time: {latest_event_time}")
+else:
+    print("The DataFrame is empty, no events to process.")
+
+# Function to prompt user for date input with validation
+def prompt_datetime(prompt_message, default_datetime):
+    while True:
+        user_input = input(f"{prompt_message} [{default_datetime.strftime('%H:%M:%S %d/%m/%Y')}] or press Enter to keep: ").strip()
+        if not user_input:  # No input, keep default
+            return default_datetime
+        try:
+            # Parse user input
+            return pd.to_datetime(user_input, format='%H:%M:%S %d/%m/%Y')
+        except ValueError:
+            print("Invalid date/time format. Please use 'HH:MM:SS DD/MM/YYYY'.")
+
+if not df.empty:
+    # Sort the DataFrame based on the 'DateTime' column
+    df_sorted = df.sort_values(by='DateTime')
+    earliest_event_time = df_sorted.iloc[0]['DateTime']
+    latest_event_time = df_sorted.iloc[-1]['DateTime']
+
+    print(f"Current earliest event time: {earliest_event_time}")
+    print(f"Current latest event time: {latest_event_time}")
+
+    # Prompt user to edit the earliest and latest event times
+    new_earliest_event_time = prompt_datetime("Enter new earliest event time", earliest_event_time)
+    new_latest_event_time = prompt_datetime("Enter new latest event time", latest_event_time)
+
+    # Filter the DataFrame to the new date range
+    df_filtered = df[(df['DateTime'] >= new_earliest_event_time) & (df['DateTime'] <= new_latest_event_time)]
+
+    print(f"Filtered events from {new_earliest_event_time} to {new_latest_event_time}")
+    print(df_filtered)
+else:
+    print("The Datset is empty, no events to process.")
+
+# User confirmation for CSV output
+user_confirm = input("Do you want to save the data to a CSV file? (yes/no): ").strip().lower()
+
+if user_confirm == 'yes':
+    source_dir = os.path.dirname(file_path)
+    base_name = os.path.basename(file_path)
+    file_name, file_ext = os.path.splitext(base_name)
+    current_time = datetime.now().strftime("%Y-%m-%d %H-%M-%S")
+    output_file_name = f"{file_name} output on {current_time}.csv"
+    output_file_path = os.path.join(source_dir, output_file_name)
+
+    df.to_csv(output_file_path, index=False)
+    print(f"Data saved to {output_file_path}")
+else:
+    print("Data not saved to CSV.")
+
